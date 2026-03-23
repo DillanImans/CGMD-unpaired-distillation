@@ -1,0 +1,231 @@
+run:
+  name: outputname
+  output_root: logs/runs
+  seed: 100
+
+phase1_2d:
+  data:
+    patient_index_csv: ../../data/clinical.csv
+    brain_index_csv: ../../data/brain_index.csv
+    brain_root: ../../data/brain_merged_cropped256
+    splits_csv: ../../data/splits_kfold_folds/fold_5.csv
+    label_col: htn
+
+  split:
+    train_imaging_group: brain_only
+    val_imaging_group: brain_only
+
+  train:
+    epochs: 40
+    batch_size: 8
+    lr: 1.0e-4
+    weight_decay: 1.0e-5
+    num_workers: 4
+    val_every: 2
+    amp: true
+    grad_clip_norm: 1.0
+    multi_gpu_dataparallel: false
+    resume: null
+
+  model:
+    backbone: resnet34_2d
+    pretrained: false
+    embed_dim: 512
+    normalize_embedding: true
+    num_classes: 1
+
+  slices:
+    num_slices: 16
+    strategy: center
+
+  eval:
+    use_youden_threshold: true
+
+  sampler:
+    enabled: false
+    mode: class_and_patient_balanced
+
+  transforms:
+    intensity_scale: true
+
+  export:
+    patient_index_csv: ../../data/clinical.csv
+    brain_index_csv: ../../data/brain_index.csv
+    brain_root: ../../data/brain_merged_cropped256
+    checkpoint: null
+    out_path: null
+    export_splits: [train, val]
+    batch_size: 8
+    num_workers: 4
+
+
+graph:
+  patient_index_csv: ../../data/clinical.csv
+  splits_csv: ../../data/splits_kfold_folds/fold_5.csv
+  splits: ["train", "val"]
+  combine_splits: true
+  combined_name: trainval_inductive
+  inductive: true
+  inductive_query_splits: ["train"]
+  inductive_query_split_col: fundus_split
+
+  k: 20
+  metric: "cosine"
+  weight_mode: "softmax"
+  edge_direction: "directed"
+  temperature: 0.5
+  rbf_sigma: 1.0
+
+  binary_cols: ["dm","sex","dyslipidemia","smoking","cad","af","paod"]
+  cont_z_cols: ["age_z","creatinine_z","bun_z","cholesterol_z","triglyceride_z","hdl_z","ldl_z","glucose_z"]
+  out_dir: null
+  brain_embeddings_pt: null
+
+phase3:
+  data:
+    brain_teacher_embeddings: null
+    graph_npz: null
+    splits_csv: ../../data/splits_kfold_folds/fold_5.csv
+    clinical_csv: ../../data/clinical.csv
+    label_col: htn
+
+    clinical_exclude_cols: [patient_id, sbp, dbp, htn, n_brain, has_brain, n_fundus, has_fundus]
+    binary_cols: [sex, dyslipidemia, smoking, cad, af, paod, dm]
+    cont_cols: [age, creatinine, bun, cholesterol, triglyceride, hdl, ldl, glucose]
+
+  model:
+    backbone: simple3d
+    hidden_dim: 128
+    num_layers: 2
+    dropout: 0.1
+    use_mlp: true
+    mlp_dim: 128
+    normalize_output: true
+
+  train:
+    epochs: 300
+    lr: 1.0e-3
+    weight_decay: 1.0e-4
+    loss_type: cosine
+    mse_weight: 1.0
+    patience: 30
+    use_classifier: true
+    cls_weight: 1.0
+    emb_weight: 1.0
+    pos_weight: null
+    select_metric: val_cosine_mixed
+
+  eval:
+    retrieval_k: 10
+
+  teacher_smoothing:
+    enabled: false
+    alpha: 0.9
+    steps: 1
+    neighbor_dir: out
+    weight_mode: rbf
+    rbf_sigma: 1.0
+
+phase4:
+  data:
+    graph_npz: null
+    splits_csv: ../../data/splits_kfold_folds/fold_5.csv
+    clinical_csv: ../../data/clinical.csv
+    label_col: htn
+
+    clinical_exclude_cols: [patient_id, sbp, dbp, htn, n_brain, has_brain, n_fundus, has_fundus]
+    binary_cols: [sex, dyslipidemia, smoking, cad, af, paod, dm]
+    cont_cols: [age, creatinine, bun, cholesterol, triglyceride, hdl, ldl, glucose]
+
+  model:
+    backbone: simple3d
+    hidden_dim: 128
+    num_layers: 2
+    dropout: 0.2
+    use_mlp: true
+    mlp_dim: 128
+    normalize_output: true
+
+  phase3:
+    ckpt_path: null
+
+  mc:
+    K: 30
+    normalize_each_pass: true
+
+  confidence:
+    percentile_high: 95
+    eps: 1e-12
+
+phase5:
+  run_subname: "f_full"
+
+  mode:
+    use_fundus: true
+    use_clinical: true
+    use_priors: true
+    use_anchor: false
+
+  losses:
+    cls_weight: 1.0
+    distill_weight: 1
+    anchor_weight: 1.0
+    distill_metric: cosine
+    distill_mse_weight: 1.0
+    push_weight: 0
+    push_margin: 0.2
+    push_temperature: 1
+    push_trigger: 1
+    push_gate: hard
+    push_gate_temp: 0.1
+
+  model:
+    backbone: resnet18
+    pretrained: true
+    embed_dim: 512
+    fusion: concat
+    clinical_mlp_dim: 128
+    dropout: 0.1
+
+  data:
+    fundus_index_csv: ../../data/fundus_index.csv
+    fundus_root: ../../data/fundus_processed
+    clinical_csv: ../../data/clinical.csv
+    splits_csv: ../../data/splits_kfold_folds/fold_5.csv
+    priors_npz_list: null
+    priors_pos_npz: auto
+    priors_neg_npz: auto
+    brain_teacher_embeddings: null
+    priors_use_confidence: false
+    priors_for_val: false
+    label_col: htn
+    image_size: 224
+    batch_size: 32
+    num_workers: 4
+    augment: true
+    patient_level: true
+    sampling: none
+
+    clinical_exclude_cols: [patient_id, sbp, dbp, htn, n_brain, has_brain, n_fundus, has_fundus]
+    binary_cols: [sex, dyslipidemia, smoking, cad, af, paod, dm]
+    cont_cols: [age, creatinine, bun, cholesterol, triglyceride, hdl, ldl, glucose]
+
+  relational_kd:
+    enabled: true
+    lambda_rel: 1
+    use_weighted_edges: true
+    same_label_only: true
+    teacher_prior_mode: "pos_minus_neg"
+    similarity: "cosine"
+    edge_source: "fundus_train_graph"
+    graph_npz: null
+
+  train:
+    epochs: 50
+    pos_weight: null
+    lr: 1.0e-4
+    weight_decay: 1.0e-4
+    patience: 10
+    val_metric: auc
+    seed: 0
+    device: cuda

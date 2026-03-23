@@ -1,8 +1,10 @@
-# CGMD
+# Clinical Graph-Mediated Distillation for Unpaired MRI-to-CFI Hypertension Prediction
 
-This repository contains the code for the CGMD project accompanying our current arXiv/conference submission.
+<p align="center">
+  <img src="finale_cgmd.png" alt="CGMD Overview" width="700"/>
+</p>
 
-The purpose of this release is to provide the core implementation used in the paper. This is a research code release for transparency and reference, and is not intended to be a fully packaged end-to-end reproduction repository.
+This repository contains the code for the CGMD project accompanying our current arXiv/conference submission. The purpose of this release is to provide the core implementation used in the paper. This is a research code release for transparency and reference, and is not intended to be a fully packaged end-to-end reproduction repository. arxiv: link here.
 
 ## Overview
 

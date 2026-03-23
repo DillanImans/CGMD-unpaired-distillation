@@ -4,7 +4,9 @@
   <img src="finale_cgmd.png" alt="CGMD Overview" width="700"/>
 </p>
 
-This repository contains the code for the CGMD project accompanying our current arXiv/conference submission. The purpose of this release is to provide the core implementation used in the paper. This is a research code release for transparency and reference, and is not intended to be a fully packaged end-to-end reproduction repository. arxiv: link here.
+This repository contains the code for the CGMD project accompanying our current arXiv/conference submission. The purpose of this release is to provide the core implementation used in the paper. This is a research code release for transparency and reference, and is not intended to be a fully packaged end-to-end reproduction repository. 
+
+arxiv: link here.
 
 ## Overview
 

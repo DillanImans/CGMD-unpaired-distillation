@@ -6,7 +6,7 @@
 
 This repository contains the code for the CGMD project accompanying our current arXiv/conference submission. The purpose of this release is to provide the core implementation used in the paper. This is a research code release for transparency and reference, and is not intended to be a fully packaged end-to-end reproduction repository. 
 
-Paper Link: to be filled later.
+Paper Link: https://arxiv.org/abs/2603.21809.
 
 ## Overview
 

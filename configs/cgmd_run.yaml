@@ -16,7 +16,7 @@ phase1_2d:
     val_imaging_group: brain_only
 
   train:
-    epochs: 40
+    epochs: 50
     batch_size: 8
     lr: 1.0e-4
     weight_decay: 1.0e-5
@@ -71,15 +71,32 @@ graph:
 
   k: 20
   metric: "cosine"
-  weight_mode: "softmax"
+  weight_mode: "rbf"
   edge_direction: "directed"
   temperature: 0.5
   rbf_sigma: 1.0
 
+  clinical_cols: ["age","sex","dyslipidemia","smoking","cad","af","paod","dm",
+                  "creatinine","bun","cholesterol","triglyceride","hdl","ldl","glucose"]
   binary_cols: ["dm","sex","dyslipidemia","smoking","cad","af","paod"]
-  cont_z_cols: ["age_z","creatinine_z","bun_z","cholesterol_z","triglyceride_z","hdl_z","ldl_z","glucose_z"]
   out_dir: null
   brain_embeddings_pt: null
+
+graph_fundus:
+  patient_index_csv: ../../data/clinical.csv
+  splits_csv: ../../data/splits_kfold_folds/fold_5.csv
+  fundus_split_col: fundus_split
+  k: 5
+  metric: "cosine"
+  weight_mode: "rbf"
+  edge_direction: "undirected"
+  temperature: 0.5
+  rbf_sigma: 1.0
+  clinical_cols: ["age","sex","dyslipidemia","smoking","cad","af","paod","dm",
+                  "creatinine","bun","cholesterol","triglyceride","hdl","ldl","glucose"]
+  binary_cols: ["dm","sex","dyslipidemia","smoking","cad","af","paod"]
+  out_name: graph_fundus_train
+  out_dir: null
 
 phase3:
   data:
@@ -119,7 +136,7 @@ phase3:
     retrieval_k: 10
 
   teacher_smoothing:
-    enabled: false
+    enabled: true
     alpha: 0.9
     steps: 1
     neighbor_dir: out
@@ -200,7 +217,7 @@ phase5:
     priors_for_val: false
     label_col: htn
     image_size: 224
-    batch_size: 32
+    batch_size: 8
     num_workers: 4
     augment: true
     patient_level: true
@@ -215,7 +232,7 @@ phase5:
     lambda_rel: 1
     use_weighted_edges: true
     same_label_only: true
-    teacher_prior_mode: "pos_minus_neg"
+    teacher_prior_mode: "label_conditional"
     similarity: "cosine"
     edge_source: "fundus_train_graph"
     graph_npz: null

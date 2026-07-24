@@ -9,7 +9,15 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from models.fundus_student import FundusStudent
-from trainers.phase5_fundus_trainer import TrainResult, compute_distill_loss, save_history, evaluate_loader
+from trainers.phase5_fundus_trainer import (
+    TrainResult,
+    collect_loader_predictions,
+    compute_distill_loss,
+    evaluate_loader,
+    patient_youden_threshold,
+    save_history,
+    scan_youden_threshold,
+)
 from utils.phase5_fundus_data import (
     FundusStudentDataset,
     build_clinical_map,
@@ -283,8 +291,9 @@ def _compute_relational_loss(
 
     loss_vec = (cos_s - cos_t).pow(2)
     if rel_state["use_weighted_edges"]:
+        # paper Eq. 7: weighted mean normalized by sum of edge weights (Sum pi_uv).
         w_t = torch.as_tensor(w[mask], dtype=loss_vec.dtype, device=device)
-        loss_rel = (w_t * loss_vec).mean()
+        loss_rel = (w_t * loss_vec).sum() / (w_t.sum() + 1e-12)
     else:
         loss_rel = loss_vec.mean()
     return loss_rel, int(mask.sum())
@@ -638,9 +647,35 @@ def _run_once(run_dir: Path, run_cfg: dict, phase_cfg: dict, data_cfg: dict) -> 
     model.to(device)
     model.eval()
 
-    with torch.no_grad():
-        val_metrics = evaluate_loader(model, val_loader, device)
+    # Operating-point threshold is fit on the TRAIN split (Youden's J) and then
+    # applied unchanged to the held-out validation split, as described in the paper.
+    # A clean (non-augmented) pass over the training set is used for the threshold.
+    train_eval_ds = FundusStudentDataset(
+        samples=samples_train,
+        image_size=int(data_cfg.get("image_size", 224)),
+        augment=False,
+        use_clinical=bool(mode_cfg.get("use_clinical", False)),
+        use_priors=bool(mode_cfg.get("use_priors", False)),
+        use_anchor=bool(mode_cfg.get("use_anchor", False)),
+    )
+    train_eval_loader = DataLoader(
+        train_eval_ds,
+        batch_size=int(data_cfg.get("batch_size", 32)),
+        shuffle=False,
+        num_workers=max(1, int(data_cfg.get("num_workers", 4)) // 2),
+        pin_memory=True,
+    )
 
+    with torch.no_grad():
+        tr_pids, tr_probs, tr_labels = collect_loader_predictions(model, train_eval_loader, device)
+        patient_thr = patient_youden_threshold(tr_pids, tr_probs, tr_labels)
+        scan_thr = scan_youden_threshold(tr_probs, tr_labels)
+        val_metrics = evaluate_loader(
+            model, val_loader, device, threshold=patient_thr, scan_threshold=scan_thr
+        )
+
+    val_metrics["train_youden_threshold"] = float(patient_thr)
+    val_metrics["train_youden_threshold_scan"] = float(scan_thr)
     save_json(run_dir / "eval_summary.json", val_metrics)
 
     return {

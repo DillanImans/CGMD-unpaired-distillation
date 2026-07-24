@@ -46,14 +46,25 @@ python -m scripts_and_bash.phase5_train_fundus_student_upgraded_pushpull --confi
 ```
 
 ## Final CGMD Setting
-For the final multimodal student setting used in the paper, the important phase-5 options are:
+For the final multimodal student setting used in the paper, the important options are:
 
 ```bash
+# Teacher smoothing (Sec. 2.1, Eq. 2) must be enabled for the full method:
+phase3.teacher_smoothing.enabled: true
+
+# Phase-5 student:
 mode.use_clinical: true
 mode.use_priors: true
 mode.use_anchor: false
 relational_kd.enabled: true
+relational_kd.teacher_prior_mode: label_conditional
 ```
+
+The clinical graph step builds two graphs: the brain/imputation graph
+(`graph_trainval_inductive.npz`, k=20) and the training-fundus relational graph
+(`graph_fundus_train.npz`, k=5, undirected) used by phase-5 relational KD. Both are
+built from the 15 shared clinical variables only — SBP/DBP are excluded to avoid
+blood-pressure label leakage.
 
 ## Notes
 This repository does not include the full dataset or all preprocessing assets.

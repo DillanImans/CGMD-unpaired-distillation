@@ -67,11 +67,11 @@ def _auprc_score(y_true: np.ndarray, y_score: np.ndarray) -> float:
     return float(ap)
 
 
-def patient_level_metrics(
+def aggregate_patient_scores(
     patient_ids: List[str],
     probs: np.ndarray,
     labels: np.ndarray,
-) -> Dict[str, float]:
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
     pid_to_probs: Dict[str, List[float]] = {}
     pid_to_label: Dict[str, int] = {}
     for pid, p, y in zip(patient_ids, probs, labels):
@@ -81,18 +81,53 @@ def patient_level_metrics(
     uniq_pids = list(pid_to_probs.keys())
     y_true = np.array([pid_to_label[pid] for pid in uniq_pids])
     y_score = np.array([np.mean(pid_to_probs[pid]) for pid in uniq_pids])
+    return uniq_pids, y_true, y_score
 
-    youden_t, _, _, cm = best_threshold_by_youden(y_true, y_score)
+
+def patient_youden_threshold(
+    patient_ids: List[str],
+    probs: np.ndarray,
+    labels: np.ndarray,
+) -> float:
+    _, y_true, y_score = aggregate_patient_scores(patient_ids, probs, labels)
+    t, _, _, _ = best_threshold_by_youden(y_true, y_score)
+    return float(t)
+
+
+def scan_youden_threshold(probs: np.ndarray, labels: np.ndarray) -> float:
+    t, _, _, _ = best_threshold_by_youden(labels.astype(int), probs)
+    return float(t)
+
+
+def _confusion_counts(y_true: np.ndarray, y_pred: np.ndarray) -> Tuple[int, int, int, int]:
+    tp = int(((y_true == 1) & (y_pred == 1)).sum())
+    tn = int(((y_true == 0) & (y_pred == 0)).sum())
+    fp = int(((y_true == 0) & (y_pred == 1)).sum())
+    fn = int(((y_true == 1) & (y_pred == 0)).sum())
+    return tp, tn, fp, fn
+
+
+def patient_level_metrics(
+    patient_ids: List[str],
+    probs: np.ndarray,
+    labels: np.ndarray,
+    threshold: float | None = None,
+) -> Dict[str, float]:
+    uniq_pids, y_true, y_score = aggregate_patient_scores(patient_ids, probs, labels)
+
+    # If no external threshold is supplied, fall back to fitting Youden's J on
+    # these scores. The reported results pass a threshold fit on the TRAIN split.
+    if threshold is None:
+        youden_t, _, _, _ = best_threshold_by_youden(y_true, y_score)
+    else:
+        youden_t = float(threshold)
     y_pred = (y_score >= youden_t).astype(int)
     acc = float((y_pred == y_true).mean())
     bal = _balanced_acc(y_true, y_pred)
     auc = _auc_score(y_true, y_score)
     auprc = _auprc_score(y_true, y_score)
 
-    tp = int(cm[1, 1])
-    tn = int(cm[0, 0])
-    fp = int(cm[0, 1])
-    fn = int(cm[1, 0])
+    tp, tn, fp, fn = _confusion_counts(y_true, y_pred)
     sensitivity = tp / max(tp + fn, 1)
     specificity = tn / max(tn + fp, 1)
     f1 = (2 * tp) / max(2 * tp + fp + fn, 1)
@@ -115,10 +150,14 @@ def patient_level_metrics(
 def scan_level_metrics(
     probs: np.ndarray,
     labels: np.ndarray,
+    threshold: float | None = None,
 ) -> Dict[str, float]:
     y_true = labels.astype(int)
     y_score = probs
-    youden_t, _, _, cm = best_threshold_by_youden(y_true, y_score)
+    if threshold is None:
+        youden_t, _, _, _ = best_threshold_by_youden(y_true, y_score)
+    else:
+        youden_t = float(threshold)
     y_pred = (y_score >= youden_t).astype(int)
 
     acc = float((y_pred == y_true).mean())
@@ -126,10 +165,7 @@ def scan_level_metrics(
     auc = _auc_score(y_true, y_score)
     auprc = _auprc_score(y_true, y_score)
 
-    tp = int(cm[1, 1])
-    tn = int(cm[0, 0])
-    fp = int(cm[0, 1])
-    fn = int(cm[1, 0])
+    tp, tn, fp, fn = _confusion_counts(y_true, y_pred)
     sensitivity = tp / max(tp + fn, 1)
     specificity = tn / max(tn + fp, 1)
     f1 = (2 * tp) / max(2 * tp + fp + fn, 1)
@@ -292,10 +328,12 @@ def train_fundus(
     return TrainResult(best_epoch=best_epoch, best_val=best_val, history=history)
 
 
-def evaluate_loader(model: torch.nn.Module, loader, device: torch.device) -> Dict[str, float]:
+def collect_loader_predictions(
+    model: torch.nn.Module, loader, device: torch.device
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
     probs = []
     labels = []
-    patient_ids = []
+    patient_ids: List[str] = []
 
     for batch in loader:
         image = batch["image"].to(device)
@@ -313,9 +351,20 @@ def evaluate_loader(model: torch.nn.Module, loader, device: torch.device) -> Dic
 
     probs = np.concatenate(probs, axis=0)
     labels = np.concatenate(labels, axis=0).astype(int)
+    return patient_ids, probs, labels
 
-    metrics = patient_level_metrics(patient_ids, probs, labels)
-    scan_metrics = scan_level_metrics(probs, labels)
+
+def evaluate_loader(
+    model: torch.nn.Module,
+    loader,
+    device: torch.device,
+    threshold: float | None = None,
+    scan_threshold: float | None = None,
+) -> Dict[str, float]:
+    patient_ids, probs, labels = collect_loader_predictions(model, loader, device)
+
+    metrics = patient_level_metrics(patient_ids, probs, labels, threshold=threshold)
+    scan_metrics = scan_level_metrics(probs, labels, threshold=scan_threshold)
     metrics.update({
         "scan_auc": scan_metrics["auc"],
         "scan_auprc": scan_metrics["auprc"],

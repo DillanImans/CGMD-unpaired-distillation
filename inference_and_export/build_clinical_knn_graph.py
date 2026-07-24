@@ -145,7 +145,8 @@ def build_knn_graph(
         w = _softmax_rowwise(-dists / temperature)
     else:
         assert rbf_sigma > 0
-        w = np.exp(-(dists ** 2) / (2.0 * (rbf_sigma ** 2)))
+        # paper Eq. 1: w_ij = exp(-d_ij^2 / sigma^2), normalized over the neighborhood
+        w = np.exp(-(dists ** 2) / (rbf_sigma ** 2))
         w = w / (w.sum(axis = 1, keepdims = True) + 1e-12)
 
     src = np.repeat(np.arange(N), k_eff)
@@ -204,7 +205,8 @@ def build_knn_graph_with_pool(
         w = _softmax_rowwise(-dists / temperature)
     else:
         assert rbf_sigma > 0
-        w = np.exp(-(dists ** 2) / (2.0 * (rbf_sigma ** 2)))
+        # paper Eq. 1: w_ij = exp(-d_ij^2 / sigma^2), normalized over the neighborhood
+        w = np.exp(-(dists ** 2) / (rbf_sigma ** 2))
         w = w / (w.sum(axis=1, keepdims=True) + 1e-12)
 
     return {
@@ -234,6 +236,118 @@ def degree_stats(edge_index: np.ndarray, N: int) -> dict:
         }
     
     return {"out_deg": summ(out_deg), "in_deg": summ(in_deg)}
+
+def build_fundus_train_graph(cfg: dict, run_root) -> None:
+    """Build the clinical kNN graph over training fundus patients (paper Sec. 2.3, GF).
+
+    Undirected, k=5 by default. Saved as graph_fundus_train.npz with the keys
+    (patient_ids, edge_index, edge_weight) expected by phase-5 relational KD.
+    """
+    fcfg = dict(cfg["graph_fundus"])
+
+    patient_csv = Path(fcfg["patient_index_csv"])
+    splits_csv = fcfg.get("splits_csv")
+    if not splits_csv:
+        raise ValueError("graph_fundus.splits_csv is required")
+
+    if run_root is not None:
+        out_dir = resolve_path(fcfg.get("out_dir"), phase_dir(run_root, "graphs"))
+    else:
+        out_dir = Path(fcfg.get("out_dir") or "important_results/graphs")
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    k = int(fcfg.get("k", 5))
+    metric = fcfg.get("metric", "cosine")
+    weight_mode = fcfg.get("weight_mode", "rbf")
+    edge_direction = str(fcfg.get("edge_direction", "undirected")).lower()
+    if edge_direction not in {"directed", "undirected"}:
+        raise ValueError("graph_fundus.edge_direction must be one of: directed, undirected")
+    temperature = float(fcfg.get("temperature", 0.5))
+    rbf_sigma = float(fcfg.get("rbf_sigma", 1.0))
+
+    clinical_cols = fcfg.get(
+        "clinical_cols",
+        [
+            "age","sex","dyslipidemia","smoking","cad","af","paod","dm",
+            "creatinine","bun","cholesterol","triglyceride","hdl","ldl","glucose",
+        ],
+    )
+    bin_cols = fcfg.get("binary_cols", ["sex","dyslipidemia","smoking","cad","af","paod","dm"])
+    cont_cols = [c for c in clinical_cols if c not in bin_cols]
+    contz_cols = [f"{c}_z" for c in cont_cols]
+    feature_cols = list(bin_cols) + contz_cols
+
+    df = pd.read_csv(patient_csv)
+    df["patient_id"] = df["patient_id"].astype(str)
+
+    df_splits = pd.read_csv(splits_csv)
+    split_col = fcfg.get("fundus_split_col", "fundus_split")
+    if split_col not in df_splits.columns:
+        if "split" in df_splits.columns:
+            split_col = "split"
+        else:
+            raise ValueError(f"graph_fundus: splits_csv missing '{split_col}' (and no 'split' fallback)")
+    if not {"patient_id", split_col}.issubset(df_splits.columns):
+        raise ValueError("graph_fundus: splits_csv must include patient_id and the fundus split column")
+    split_map = dict(zip(df_splits["patient_id"].astype(str), df_splits[split_col].astype(str)))
+    df["split"] = df["patient_id"].map(split_map)
+
+    # Training fundus patients only: has_fundus==1 and fundus split == train.
+    if "has_fundus" in df.columns:
+        is_fundus = df["has_fundus"].astype(int) == 1
+    else:
+        is_fundus = pd.Series(True, index=df.index)
+    df_fundus = df[is_fundus & (df["split"] == "train")].copy()
+    if len(df_fundus) < 2:
+        raise ValueError(f"graph_fundus: need >=2 training fundus patients, got {len(df_fundus)}")
+
+    # Standardize continuous features on the training-fundus set.
+    for c in cont_cols:
+        mu = df_fundus[c].mean()
+        sd = df_fundus[c].std(ddof=0)
+        sd = float(sd) if sd and sd > 1e-12 else 1.0
+        df_fundus[f"{c}_z"] = (df_fundus[c] - mu) / sd
+    for c in bin_cols:
+        df_fundus[c] = df_fundus[c].astype(int)
+
+    if df_fundus[feature_cols].isna().any().any():
+        bad = df_fundus[feature_cols].isna().mean().sort_values(ascending=False)
+        raise ValueError(f"graph_fundus: NaNs in feature columns.\n{bad}")
+
+    graph = build_knn_graph(
+        df_split=df_fundus,
+        feature_cols=feature_cols,
+        k=k,
+        metric=metric,
+        weight_mode=weight_mode,
+        temperature=temperature,
+        rbf_sigma=rbf_sigma,
+        edge_direction=edge_direction,
+    )
+
+    out_name = fcfg.get("out_name", "graph_fundus_train")
+    out_path = out_dir / f"{out_name}.npz"
+    np.savez_compressed(
+        out_path,
+        patient_ids=_safe_np_str_array(graph["patient_ids"]),
+        feature_cols=_safe_np_str_array(feature_cols),
+        k=np.int64(k),
+        k_eff=np.int64(graph["k_eff"]),
+        metric=str(metric),
+        weight_mode=str(weight_mode),
+        edge_direction=str(edge_direction),
+        temperature=np.float32(temperature),
+        rbf_sigma=np.float32(rbf_sigma),
+        edge_index=graph["edge_index"],
+        edge_weight=graph["edge_weight"],
+        edge_distance=graph["edge_distance"],
+    )
+    print(f"\n=== Fundus train graph ===")
+    print(f"N={len(graph['patient_ids'])}  k={k}  k_eff={graph['k_eff']}  "
+          f"metric={metric}  weight={weight_mode}  edge_direction={edge_direction}")
+    print(f"[DONE] Saved: {out_path}")
+
 
 def main(config_path: str):
     cfg = load_yaml(config_path)
@@ -273,10 +387,13 @@ def main(config_path: str):
     rbf_sigma = float(gcfg.get("rbf_sigma", 1.0))
 
     # clinical preprocessing config
+    # NOTE: SBP/DBP are intentionally NOT part of the default feature set. The task
+    # is HTN prediction and blood pressure directly encodes the label, so including
+    # it here would leak the label into the clinical graph. Override via graph.clinical_cols.
     clinical_cols = gcfg.get(
         "clinical_cols",
         [
-            "age","sex","sbp","dbp","dyslipidemia","smoking","cad","af","paod",
+            "age","sex","dyslipidemia","smoking","cad","af","paod","dm",
             "creatinine","bun","cholesterol","triglyceride","hdl","ldl","glucose",
         ],
     )
@@ -534,6 +651,9 @@ def main(config_path: str):
         anchor_conf=anchor_conf.astype(np.float32),
     )
     print(f"[DONE] Saved: {out_path}")
+
+    if "graph_fundus" in cfg:
+        build_fundus_train_graph(cfg, run_root)
 
 
 if __name__ == "__main__":
